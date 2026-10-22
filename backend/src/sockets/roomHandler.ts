@@ -29,7 +29,7 @@ import {
   searchLive,
   getExploreData,
 } from '../services/roomService';
-import { PlaybackSync, BatonPassedEvent, VetoResult, Reaction, ReactionType, SongPlayRecord, SessionEvent,} from '../types/room';
+import type { PlaybackSync, BatonPassedEvent, VetoResult, Reaction, ReactionType, SongPlayRecord, SessionEvent } from '../types/room';
 import redisClient from '../config/redis';
 
 export function registerRoomHandlers(io: Server, socket: Socket) {
@@ -126,7 +126,7 @@ export function registerRoomHandlers(io: Server, socket: Socket) {
         const members = await redisClient.sMembers(`room:${payload.code}:members`);
         const memberLeft = !members.some((m) => {
           const parsed = JSON.parse(m);
-          return parsed.userId === djState.currentDjId;
+          return parsed.userId === djState.currentDjId!;
         });
 
         if (memberLeft) {
@@ -157,27 +157,33 @@ export function registerRoomHandlers(io: Server, socket: Socket) {
     }
   });
 
-  socket.on('disconnecting', async (payload: { code: string }) => {
-    const rooms = Array.from(socket.rooms).filter((r) => r !== socket.id);
+  socket.on('disconnecting', async (reason: string, details?: any) => {
+  const rooms = Array.from(socket.rooms).filter((r) => r !== socket.id);
 
-    for (const code of rooms) {
-      try {
-        await removeMemberFromRoom(code, socket.id);
-              // If the leaving member was the DJ, pass the baton
-      const djState = await getDjState(payload.code);
+  for (const code of rooms) {
+    try {
+      await removeMemberFromRoom(code, socket.id);
+
+      // ---- If the leaving member was the DJ, pass the baton ----
+      const djState = await getDjState(code); // FIX: changed payload.code to code
+      
       if (djState && djState.currentDjId) {
-        const members = await redisClient.sMembers(`room:${payload.code}:members`);
+        const members = await redisClient.sMembers(`room:${code}:members`); // FIX: changed payload.code to code
+        
         const memberLeft = !members.some((m) => {
           const parsed = JSON.parse(m);
-          return parsed.userId === djState.currentDjId;
+          // FIX: Added non-null assertion (!) since we already checked djState above
+          return parsed.userId === djState.currentDjId!;
         });
 
         if (memberLeft) {
-          const nextDj = await pickNextDj(payload.code, djState.currentDjId);
+          const nextDj = await pickNextDj(code, djState.currentDjId!); // FIX: changed payload.code to code
+          
           if (nextDj) {
-            await setCurrentDj(payload.code, nextDj.userId, nextDj.username);
-            io.to(payload.code).emit('baton_passed', {
-              previousDjId: djState.currentDjId,
+            await setCurrentDj(code, nextDj.userId, nextDj.username); // FIX: changed payload.code to code
+            
+            io.to(code).emit('baton_passed', { // FIX: changed payload.code to code
+              previousDjId: djState.currentDjId!,
               previousDjUsername: djState.currentDjUsername,
               newDjId: nextDj.userId,
               newDjUsername: nextDj.username,
@@ -188,16 +194,18 @@ export function registerRoomHandlers(io: Server, socket: Socket) {
           }
         }
       }
-        const state = await getRoomState(code);
-        io.to(code).emit('member_left', {
-          socketId: socket.id,
-          members: state?.members,
-        });
-      } catch (err) {
-        console.error('Error during cleanup:', err);
-      }
+
+      // ---- Notify remaining members ----
+      const state = await getRoomState(code);
+      io.to(code).emit('member_left', {
+        socketId: socket.id,
+        members: state?.members,
+      });
+    } catch (err) {
+      console.error('Error during cleanup:', err);
     }
-  });
+  }
+});
 
   
   /**
@@ -290,7 +298,7 @@ export function registerRoomHandlers(io: Server, socket: Socket) {
         await trackSessionEvent(payload.code, {
           type: 'baton_pass',
           userId: payload.userId,
-          username: djState.currentDjUsername,
+          username: djState?.currentDjUsername|| 'Unknown',
           timestamp: Date.now(),
           metadata: { to: nextDj.userId, reason: 'manual' },
         });
